@@ -1,27 +1,64 @@
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Brain, Play, Square, RefreshCcw, Trophy, Timer, Hash, TrendingUp, ChevronDown, ChevronUp } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { 
+  Brain, Play, Square, RefreshCcw, Trophy, 
+  Timer, Hash, TrendingUp, ChevronDown, ChevronUp, 
+  Calendar, BookOpen, Trash2, X 
+} from 'lucide-react';
 import { formatTime, formatDuration } from './utils/formatters';
-import { IntervalRecord } from './types';
+import { IntervalRecord, SessionRecord } from './types';
 
 const STORAGE_KEY_PB = 'mindgap_personal_best';
+const STORAGE_KEY_SESSIONS = 'mindgap_sessions_v3';
+
+// --- Audio Utility ---
+const playTuckSound = () => {
+  try {
+    const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const oscillator = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(150, audioCtx.currentTime);
+    oscillator.frequency.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+
+    gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+
+    oscillator.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+
+    oscillator.start();
+    oscillator.stop(audioCtx.currentTime + 0.1);
+  } catch (e) {
+    console.warn("Audio feedback failed", e);
+  }
+};
 
 const App: React.FC = () => {
   const [isActive, setIsActive] = useState(false);
+  const [view, setView] = useState<'main' | 'journal'>('main');
   const [currentInterval, setCurrentInterval] = useState(0);
   const [intervals, setIntervals] = useState<IntervalRecord[]>([]);
   const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
   const [personalBest, setPersonalBest] = useState<number>(0);
-  const [showHistory, setShowHistory] = useState(false);
+  const [allSessions, setAllSessions] = useState<SessionRecord[]>([]);
   
   const timerRef = useRef<number | null>(null);
   const lastThoughtTimestamp = useRef<number>(0);
 
-  // Load Personal Best
+  // Load Data
   useEffect(() => {
     const storedPB = localStorage.getItem(STORAGE_KEY_PB);
-    if (storedPB) {
-      setPersonalBest(parseInt(storedPB, 10));
+    if (storedPB) setPersonalBest(parseInt(storedPB, 10));
+
+    const storedSessions = localStorage.getItem(STORAGE_KEY_SESSIONS);
+    if (storedSessions) {
+      try {
+        setAllSessions(JSON.parse(storedSessions));
+      } catch (e) {
+        setAllSessions([]);
+      }
     }
   }, []);
 
@@ -29,16 +66,12 @@ const App: React.FC = () => {
   useEffect(() => {
     if (isActive) {
       timerRef.current = window.setInterval(() => {
-        const now = Date.now();
-        setCurrentInterval(now - lastThoughtTimestamp.current);
+        setCurrentInterval(Date.now() - lastThoughtTimestamp.current);
       }, 100);
     } else {
       if (timerRef.current) clearInterval(timerRef.current);
     }
-
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [isActive]);
 
   const startSession = () => {
@@ -48,23 +81,16 @@ const App: React.FC = () => {
     lastThoughtTimestamp.current = now;
     setCurrentInterval(0);
     setIntervals([]);
+    playTuckSound();
   };
 
-  const endSession = () => {
-    setIsActive(false);
-    // Log the final interval from last thought to end of session
-    const finalInterval = Date.now() - lastThoughtTimestamp.current;
-    if (finalInterval > 1000) {
-        handleThought(true);
-    }
-  };
-
-  const handleThought = useCallback((isManualEnd = false) => {
-    if (!isActive && !isManualEnd) return;
-
+  const recordThought = useCallback(() => {
+    if (!isActive) return;
+    playTuckSound();
+    
     const now = Date.now();
     const duration = now - lastThoughtTimestamp.current;
-
+    
     const newRecord: IntervalRecord = {
       id: intervals.length + 1,
       duration,
@@ -73,7 +99,6 @@ const App: React.FC = () => {
 
     setIntervals(prev => [...prev, newRecord]);
     
-    // Update Personal Best
     if (duration > personalBest) {
       setPersonalBest(duration);
       localStorage.setItem(STORAGE_KEY_PB, duration.toString());
@@ -83,171 +108,203 @@ const App: React.FC = () => {
     setCurrentInterval(0);
   }, [isActive, intervals.length, personalBest]);
 
-  const stats = {
+  const endSession = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setIsActive(false);
+    
+    const now = Date.now();
+    const finalGap = now - lastThoughtTimestamp.current;
+    const totalSessionDuration = now - (sessionStartTime || now);
+    
+    let finalIntervals = [...intervals];
+    if (finalGap > 500) {
+      finalIntervals.push({ id: intervals.length + 1, duration: finalGap, timestamp: now });
+    }
+
+    if (finalIntervals.length > 0) {
+      const sessionStats: SessionRecord = {
+        id: Date.now(),
+        date: new Date().toISOString(),
+        intervals: finalIntervals,
+        totalDuration: totalSessionDuration,
+        thoughtCount: finalIntervals.length,
+        longestGap: Math.max(...finalIntervals.map(i => i.duration), 0),
+        avgGap: finalIntervals.reduce((acc, curr) => acc + curr.duration, 0) / finalIntervals.length
+      };
+
+      const updatedSessions = [sessionStats, ...allSessions];
+      setAllSessions(updatedSessions);
+      localStorage.setItem(STORAGE_KEY_SESSIONS, JSON.stringify(updatedSessions));
+    }
+
+    setIntervals([]);
+  };
+
+  const deleteSession = (id: number) => {
+    const updated = allSessions.filter(s => s.id !== id);
+    setAllSessions(updated);
+    localStorage.setItem(STORAGE_KEY_SESSIONS, JSON.stringify(updated));
+  };
+
+  const groupedSessions = useMemo(() => {
+    const groups: { [key: string]: SessionRecord[] } = {};
+    allSessions.forEach(session => {
+      const dateKey = new Date(session.date).toLocaleDateString(undefined, {
+        year: 'numeric', month: 'long', day: 'numeric'
+      });
+      if (!groups[dateKey]) groups[dateKey] = [];
+      groups[dateKey].push(session);
+    });
+    return groups;
+  }, [allSessions]);
+
+  const liveStats = {
     count: intervals.length,
-    longest: Math.max(...intervals.map(i => i.duration), currentInterval),
-    average: intervals.length > 0 
-      ? intervals.reduce((acc, curr) => acc + curr.duration, 0) / intervals.length 
-      : 0,
+    longest: Math.max(...intervals.map(i => i.duration), currentInterval, 0),
+    average: intervals.length > 0 ? intervals.reduce((acc, curr) => acc + curr.duration, 0) / intervals.length : 0,
     totalDuration: sessionStartTime ? Date.now() - sessionStartTime : 0
   };
 
+  if (view === 'journal') {
+    return (
+      <div className="min-h-screen flex flex-col p-4 md:p-8 max-w-2xl mx-auto space-y-6 overflow-y-auto bg-[#0f172a] text-[#f8fafc]">
+        <header className="flex justify-between items-center">
+          <div className="flex items-center space-x-2">
+            <BookOpen className="w-6 h-6 text-indigo-400" />
+            <h1 className="text-2xl font-semibold tracking-tight">Session Journal</h1>
+          </div>
+          <button onClick={() => setView('main')} className="p-2 hover:bg-white/10 rounded-full transition-colors">
+            <X className="w-6 h-6" />
+          </button>
+        </header>
+
+        <div className="flex-grow space-y-8 pb-20">
+          {Object.keys(groupedSessions).length === 0 ? (
+            <div className="text-center py-20 text-slate-500 italic">No recorded sessions yet.</div>
+          ) : (
+            Object.entries(groupedSessions).map(([date, sessions]) => (
+              <div key={date} className="space-y-3">
+                <h3 className="text-[10px] font-bold text-indigo-300/60 uppercase tracking-widest ml-2">{date}</h3>
+                {/* FIX: Cast sessions to SessionRecord[] to ensure TypeScript recognizes the 'map' method on the unknown value. */}
+                {(sessions as SessionRecord[]).map(s => (
+                  <div key={s.id} className="bg-white/5 backdrop-blur-md border border-white/10 p-4 rounded-2xl group transition-all hover:bg-white/[0.07]">
+                    <div className="flex justify-between items-start mb-3">
+                      <div>
+                        <span className="text-lg font-medium text-slate-100">{formatDuration(s.totalDuration)} Session</span>
+                        <span className="text-[10px] text-slate-500 ml-2">{new Date(s.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                      </div>
+                      <button onClick={() => deleteSession(s.id)} className="text-slate-600 hover:text-rose-400 transition-colors p-1"><Trash2 className="w-4 h-4" /></button>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="bg-white/5 rounded-xl p-2 text-center">
+                        <div className="text-[8px] uppercase text-slate-500 font-bold">Thoughts</div>
+                        <div className="text-indigo-300 font-bold">{s.thoughtCount}</div>
+                      </div>
+                      <div className="bg-white/5 rounded-xl p-2 text-center">
+                        <div className="text-[8px] uppercase text-slate-500 font-bold">Avg Gap</div>
+                        <div className="text-emerald-400 font-bold">{formatTime(s.avgGap)}</div>
+                      </div>
+                      <div className="bg-white/5 rounded-xl p-2 text-center">
+                        <div className="text-[8px] uppercase text-slate-500 font-bold">Best Gap</div>
+                        <div className="text-amber-400 font-bold">{formatTime(s.longestGap)}</div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))
+          )}
+        </div>
+        
+        <button onClick={() => setView('main')} className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-white/5 backdrop-blur-md border border-white/10 px-10 py-4 rounded-full text-indigo-300 font-bold hover:bg-white/10 transition-colors">Close Journal</button>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen flex flex-col items-center justify-start p-4 md:p-8 space-y-6 max-w-2xl mx-auto">
-      {/* Header */}
-      <header className="w-full flex justify-between items-center mb-4">
+    <div className="h-screen flex flex-col items-center justify-between p-4 md:p-8 max-w-2xl mx-auto overflow-hidden bg-radial-at-tr from-[#1e1b4b] to-[#0f172a] text-[#f8fafc]">
+      <header className="w-full flex justify-between items-center h-16">
         <div className="flex items-center space-x-2">
-          <div className="p-2 bg-indigo-600/30 rounded-xl glass">
+          <div className="p-2 bg-indigo-600/30 rounded-xl backdrop-blur-md border border-white/10">
             <Brain className="w-6 h-6 text-indigo-400" />
           </div>
           <h1 className="text-2xl font-semibold tracking-tight">MindGap</h1>
         </div>
-        <div className="flex items-center space-x-2 text-indigo-200/70 text-sm glass px-3 py-1.5 rounded-full">
-          <Trophy className="w-4 h-4 text-yellow-500" />
-          <span>Best: {formatTime(personalBest)}</span>
+        <div className="flex items-center space-x-3">
+          <button onClick={() => setView('journal')} className="p-2 text-slate-400 hover:text-indigo-300 transition-colors relative">
+            <BookOpen className="w-6 h-6" />
+            {allSessions.length > 0 && <span className="absolute -top-1 -right-1 w-4 h-4 bg-indigo-500 text-[10px] font-bold text-white flex items-center justify-center rounded-full">{allSessions.length}</span>}
+          </button>
+          <div className="text-xs bg-white/5 backdrop-blur-md border border-white/10 px-3 py-1.5 rounded-full text-indigo-200/70">
+            Best: {formatTime(personalBest)}
+          </div>
         </div>
       </header>
 
-      {/* Main Timer Display */}
-      <main className="w-full flex-grow flex flex-col items-center justify-center space-y-12 py-8">
-        <div className="relative group">
-          <div className={`absolute inset-0 bg-indigo-500/20 blur-3xl rounded-full transition-all duration-1000 ${isActive ? 'scale-125 opacity-100' : 'scale-75 opacity-0'}`} />
-          <div className="relative flex flex-col items-center">
-            <span className="text-indigo-300/60 uppercase tracking-[0.2em] text-xs font-medium mb-2">Current Interval</span>
-            <div className={`text-7xl md:text-8xl font-light tracking-tighter ${isActive ? 'timer-shimmer' : 'text-slate-500'}`}>
-              {formatTime(isActive ? currentInterval : 0)}
+      <main className="w-full flex-grow flex flex-col items-center justify-center relative">
+        {!isActive ? (
+          <div className="flex flex-col items-center space-y-8 animate-in fade-in duration-700">
+            <div className="text-center space-y-2">
+              <div className="text-6xl font-light tracking-tighter text-slate-400 opacity-20">READY?</div>
+              <p className="text-sm text-slate-500 italic">Close your eyes and breathe.</p>
             </div>
-          </div>
-        </div>
-
-        {/* Action Buttons */}
-        <div className="w-full flex flex-col items-center space-y-6">
-          {!isActive ? (
-            <button
-              onClick={startSession}
-              className="group relative w-full md:w-64 py-6 bg-indigo-600 hover:bg-indigo-500 rounded-2xl transition-all duration-300 shadow-xl shadow-indigo-900/40 flex items-center justify-center space-x-3 overflow-hidden active:scale-95"
-            >
-              <div className="absolute inset-0 bg-gradient-to-tr from-indigo-400/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
-              <Play className="w-6 h-6 fill-current" />
-              <span className="text-xl font-medium">Begin Session</span>
+            <button onClick={startSession} className="group relative w-64 py-8 bg-indigo-600 hover:bg-indigo-500 rounded-3xl transition-all shadow-2xl shadow-indigo-900/40 flex items-center justify-center space-x-3 active:scale-95">
+              <Play className="w-8 h-8 fill-current" />
+              <span className="text-2xl font-medium">Begin</span>
             </button>
-          ) : (
-            <div className="w-full space-y-4 flex flex-col items-center">
-              <button
-                onClick={() => handleThought()}
-                className="group relative w-full py-10 md:py-12 bg-white/10 hover:bg-white/15 active:bg-white/5 rounded-3xl glass transition-all duration-200 flex flex-col items-center justify-center space-y-2 border-indigo-500/30 active:scale-95 select-none"
-              >
-                <RefreshCcw className="w-8 h-8 text-indigo-400 group-active:rotate-180 transition-transform duration-500" />
-                <span className="text-2xl font-semibold tracking-wide text-indigo-100">Thought Occurred</span>
-                <span className="text-xs text-indigo-300/50 uppercase tracking-widest">Tap to Reset Timer</span>
-              </button>
-              
-              <button
-                onClick={endSession}
-                className="w-full md:w-48 py-4 text-rose-400/80 hover:text-rose-400 font-medium flex items-center justify-center space-x-2 transition-colors active:scale-95"
-              >
-                <Square className="w-4 h-4 fill-current" />
-                <span>End Session</span>
-              </button>
-            </div>
-          )}
-        </div>
-      </main>
-
-      {/* Stats Dashboard */}
-      <section className="w-full grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard 
-          icon={<Hash className="w-4 h-4" />} 
-          label="Thoughts" 
-          value={stats.count.toString()} 
-          color="indigo" 
-        />
-        <StatCard 
-          icon={<TrendingUp className="w-4 h-4" />} 
-          label="Avg Gap" 
-          value={formatTime(stats.average)} 
-          color="emerald" 
-        />
-        <StatCard 
-          icon={<Trophy className="w-4 h-4" />} 
-          label="Longest" 
-          value={formatTime(stats.longest)} 
-          color="amber" 
-        />
-        <StatCard 
-          icon={<Timer className="w-4 h-4" />} 
-          label="Session" 
-          value={formatDuration(stats.totalDuration)} 
-          color="sky" 
-        />
-      </section>
-
-      {/* Interval History */}
-      <section className="w-full mt-4">
-        <button 
-          onClick={() => setShowHistory(!showHistory)}
-          className="w-full flex items-center justify-between p-4 glass rounded-2xl hover:bg-white/10 transition-colors"
-        >
-          <div className="flex items-center space-x-3">
-            <span className="font-medium text-slate-300">History Log</span>
-            <span className="bg-indigo-500/20 text-indigo-300 text-[10px] px-2 py-0.5 rounded-full uppercase tracking-tighter">
-              {intervals.length} intervals
-            </span>
           </div>
-          {showHistory ? <ChevronUp className="w-5 h-5 text-slate-400" /> : <ChevronDown className="w-5 h-5 text-slate-400" />}
-        </button>
+        ) : (
+          <div className="w-full h-full flex flex-col items-center justify-center">
+            <div className="absolute top-10 flex flex-col items-center z-10 pointer-events-none">
+              <span className="text-[10px] text-indigo-300/40 uppercase tracking-[0.3em] font-bold mb-1">Current Gap</span>
+              <div className="text-7xl font-light tracking-tighter text-indigo-100">
+                {formatTime(currentInterval)}
+              </div>
+            </div>
 
-        {showHistory && (
-          <div className="mt-2 space-y-2 max-h-64 overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-indigo-500/20">
-            {intervals.length === 0 ? (
-              <div className="text-center py-8 text-slate-500 italic text-sm">No thoughts recorded yet. Breathe...</div>
-            ) : (
-              intervals.slice().reverse().map((record) => (
-                <div key={record.id} className="flex justify-between items-center p-3 glass rounded-xl border-l-4 border-indigo-500/30">
-                  <div className="flex flex-col">
-                    <span className="text-xs font-semibold text-indigo-300/60 uppercase">Thought #{record.id}</span>
-                    <span className="text-xs text-slate-500">{new Date(record.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-                  </div>
-                  <div className="text-lg font-medium text-slate-200">
-                    {formatTime(record.duration)}
-                  </div>
-                </div>
-              ))
-            )}
+            {/* MASSIVE TAP ZONE - DOUBLE SIZE */}
+            <button 
+              onClick={recordThought}
+              className="w-full h-[65vh] bg-white/5 backdrop-blur-md border border-white/10 rounded-[3rem] flex flex-col items-center justify-center space-y-4 active:bg-white/10 active:scale-[0.98] transition-all duration-75 select-none touch-none overflow-hidden animate-pulse"
+              style={{ animationDuration: '3s' }}
+            >
+              <RefreshCcw className="w-16 h-16 text-indigo-400 opacity-20" />
+              <div className="text-center space-y-1">
+                <span className="text-2xl font-semibold text-indigo-100/40 uppercase tracking-widest">TAP ANYWHERE</span>
+                <p className="text-[10px] text-indigo-300/20 uppercase font-bold tracking-tighter">Eyes closed mode</p>
+              </div>
+            </button>
+
+            <button onClick={() => endSession()} className="mt-8 flex items-center space-x-2 text-rose-400/50 hover:text-rose-400 transition-colors uppercase text-xs font-bold tracking-widest py-4 px-8">
+              <Square className="w-4 h-4 fill-current" />
+              <span>Finish & Save</span>
+            </button>
           </div>
         )}
-      </section>
+      </main>
 
-      {/* Footer Branding */}
-      <footer className="w-full text-center py-6 text-slate-500 text-xs font-light tracking-widest uppercase mt-auto">
-        Mindful Awareness &bull; Inner Stillness
+      <footer className={`w-full grid grid-cols-4 gap-2 mb-4 transition-all duration-500 ${isActive ? 'opacity-30 blur-sm scale-90' : 'opacity-100'}`}>
+        <StatItem icon={<Hash className="w-3 h-3" />} label="Thoughts" value={liveStats.count.toString()} color="indigo" />
+        <StatItem icon={<TrendingUp className="w-3 h-3" />} label="Avg Gap" value={formatTime(liveStats.average)} color="emerald" />
+        <StatItem icon={<Trophy className="w-3 h-3" />} label="Best Gap" value={formatTime(liveStats.longest)} color="amber" />
+        <StatItem icon={<Timer className="w-3 h-3" />} label="Duration" value={formatDuration(liveStats.totalDuration)} color="sky" />
       </footer>
     </div>
   );
 };
 
-interface StatCardProps {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  color: 'indigo' | 'emerald' | 'amber' | 'sky';
-}
-
-const StatCard: React.FC<StatCardProps> = ({ icon, label, value, color }) => {
-  const colorMap = {
+const StatItem: React.FC<{ icon: React.ReactNode, label: string, value: string, color: string }> = ({ icon, label, value, color }) => {
+  const colorMap: any = {
     indigo: 'text-indigo-400 bg-indigo-400/10',
     emerald: 'text-emerald-400 bg-emerald-400/10',
     amber: 'text-amber-400 bg-amber-400/10',
     sky: 'text-sky-400 bg-sky-400/10',
   };
-
   return (
-    <div className="glass p-4 rounded-2xl flex flex-col space-y-1">
-      <div className={`w-fit p-1.5 rounded-lg mb-1 ${colorMap[color]}`}>
-        {icon}
-      </div>
-      <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">{label}</span>
-      <span className="text-lg font-medium text-slate-100 tabular-nums">{value}</span>
+    <div className="bg-white/5 backdrop-blur-md border border-white/10 p-3 rounded-2xl flex flex-col items-center justify-center space-y-1">
+      <div className={`w-fit p-1 rounded-lg ${colorMap[color]}`}>{icon}</div>
+      <span className="text-[8px] font-semibold text-slate-400 uppercase tracking-wider">{label}</span>
+      <span className="text-xs font-medium text-slate-100 tabular-nums">{value}</span>
     </div>
   );
 };
